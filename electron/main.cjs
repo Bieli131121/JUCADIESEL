@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, Menu } = require('electron')
 const path = require('path')
 const express = require('express')
 
@@ -19,6 +19,7 @@ function createWindow() {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    show: false,
     title: 'Sistema de Gestão - Oficina',
     webPreferences: {
       nodeIntegration: false,
@@ -26,10 +27,16 @@ function createWindow() {
     },
   })
 
+  win.once('ready-to-show', () => {
+    win.maximize()
+    win.show()
+  })
+
   win.loadURL(`http://localhost:${PORT}`)
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null)
   startServer()
   createWindow()
 

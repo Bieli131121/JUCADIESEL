@@ -9,18 +9,21 @@ import {
   BarChart3,
   Settings,
   X,
+  LogOut,
 } from 'lucide-react'
-import type { EmpresaConfig } from '@/types/database'
+import type { EmpresaConfig, Role } from '@/types/database'
+import { ROLE_LABELS } from '@/types/database'
+import { useAuth } from '@/contexts/AuthContext'
 
-const NAV_ITEMS = [
+const NAV_ITEMS: { to: string; label: string; icon: any; end?: boolean; roles?: Role[] }[] = [
   { to: '/', label: 'Painel', icon: LayoutDashboard, end: true },
   { to: '/ordens-servico', label: 'Ordens de Serviço', icon: Wrench },
-  { to: '/clientes', label: 'Clientes e Veículos', icon: Users },
-  { to: '/estoque', label: 'Estoque', icon: Package },
-  { to: '/financeiro', label: 'Financeiro', icon: Wallet },
-  { to: '/agendamento', label: 'Agendamento', icon: CalendarClock },
-  { to: '/relatorios', label: 'Relatórios', icon: BarChart3 },
-  { to: '/configuracoes', label: 'Configurações', icon: Settings },
+  { to: '/clientes', label: 'Clientes e Veículos', icon: Users, roles: ['admin', 'recepcao'] },
+  { to: '/estoque', label: 'Estoque', icon: Package, roles: ['admin', 'mecanico'] },
+  { to: '/financeiro', label: 'Financeiro', icon: Wallet, roles: ['admin', 'recepcao'] },
+  { to: '/agendamento', label: 'Agendamento', icon: CalendarClock, roles: ['admin', 'recepcao'] },
+  { to: '/relatorios', label: 'Relatórios', icon: BarChart3, roles: ['admin'] },
+  { to: '/configuracoes', label: 'Configurações', icon: Settings, roles: ['admin'] },
 ]
 
 interface SidebarProps {
@@ -30,7 +33,11 @@ interface SidebarProps {
 }
 
 export function Sidebar({ config, isMobileOpen, onCloseMobile }: SidebarProps) {
+  const { usuario, logout } = useAuth()
   const nome = config?.nome_fantasia || 'Minha Oficina'
+  const logo = config?.logo_url || '/branding/logo-jucax.png'
+
+  const itemsVisiveis = NAV_ITEMS.filter((item) => !item.roles || (usuario && item.roles.includes(usuario.role)))
 
   return (
     <>
@@ -43,24 +50,14 @@ export function Sidebar({ config, isMobileOpen, onCloseMobile }: SidebarProps) {
         }`}
       >
         <div className="flex items-center gap-3 px-5 h-16 border-b border-white/10">
-          {config?.logo_url ? (
-            <img src={config.logo_url} alt={nome} className="w-8 h-8 rounded object-cover" />
-          ) : (
-            <div
-              className="w-8 h-8 rounded flex items-center justify-center font-display font-bold text-sm"
-              style={{ backgroundColor: config?.cor_primaria || '#F2600C' }}
-            >
-              {nome.charAt(0).toUpperCase()}
-            </div>
-          )}
-          <span className="font-display font-semibold text-sm truncate">{nome}</span>
+          <img src={logo} alt={nome} className="h-9 object-contain" />
           <button className="ml-auto lg:hidden text-white/60" onClick={onCloseMobile}>
             <X size={20} />
           </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-          {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+          {itemsVisiveis.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -80,9 +77,23 @@ export function Sidebar({ config, isMobileOpen, onCloseMobile }: SidebarProps) {
           ))}
         </nav>
 
-        <div className="px-5 py-4 border-t border-white/10 text-xs text-white/40">
-          Sistema de Gestão · Oficina
-        </div>
+        {usuario && (
+          <div className="px-4 py-3 border-t border-white/10">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-white truncate">{usuario.nome}</p>
+                <p className="text-[11px] text-white/40">{ROLE_LABELS[usuario.role]}</p>
+              </div>
+              <button
+                onClick={logout}
+                className="text-white/50 hover:text-white p-1.5 rounded-lg hover:bg-white/10"
+                title="Sair"
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
+          </div>
+        )}
       </aside>
     </>
   )

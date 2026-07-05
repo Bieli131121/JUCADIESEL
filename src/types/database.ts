@@ -1,5 +1,26 @@
 // Tipos espelhando o schema.sql do Supabase
 
+export type Role = 'admin' | 'mecanico' | 'recepcao'
+
+export interface Usuario {
+  id: string
+  nome: string
+  usuario: string
+  pin_hash: string
+  role: Role
+  mecanico_id: string | null
+  ativo: boolean
+  ultimo_acesso: string | null
+  created_at: string
+  updated_at: string
+}
+
+export const ROLE_LABELS: Record<Role, string> = {
+  admin: 'Administrador',
+  mecanico: 'Mecânico',
+  recepcao: 'Recepção',
+}
+
 export type StatusOS =
   | 'orcamento'
   | 'aprovado'
