@@ -4,19 +4,26 @@
 // receber) espelham os triggers do schema.sql para manter paridade no modo local.
 
 import { supabase, supabaseConfigured } from './supabase'
+import { limparTexto, limparTextoOuNull } from './sanitize'
 import type {
   Cliente,
   Veiculo,
+  VeiculoFoto,
   Peca,
   Mecanico,
   Agendamento,
   OrdemServico,
   OSItem,
+  OSAnexo,
+  OSChecklistItem,
+  OSHistorico,
   ContaReceber,
   ContaPagar,
+  CaixaMovimentacao,
   MovimentacaoEstoque,
   EmpresaConfig,
   StatusOS,
+  NfeCompraImportada,
 } from '@/types/database'
 
 // ---------- helpers localStorage ----------
@@ -70,12 +77,18 @@ export async function upsertCliente(cliente: Partial<Cliente>): Promise<Cliente>
   }
   const novo: Cliente = {
     id: uuid(),
-    nome: cliente.nome || '',
+    nome: limparTexto(cliente.nome),
     cpf_cnpj: cliente.cpf_cnpj || null,
+    rg: cliente.rg || null,
     telefone: cliente.telefone || '',
+    whatsapp: cliente.whatsapp || null,
     email: cliente.email || null,
-    endereco: cliente.endereco || null,
-    observacoes: cliente.observacoes || null,
+    foto_url: cliente.foto_url || null,
+    cep: cliente.cep || null,
+    endereco: limparTextoOuNull(cliente.endereco),
+    cidade: cliente.cidade || null,
+    estado: cliente.estado || null,
+    observacoes: limparTextoOuNull(cliente.observacoes),
     created_at: nowIso(),
     updated_at: nowIso(),
   }
@@ -87,10 +100,22 @@ export async function upsertCliente(cliente: Partial<Cliente>): Promise<Cliente>
 export async function deleteCliente(id: string) {
   if (supabaseConfigured) {
     const { error } = await supabase.from('clientes').delete().eq('id', id)
-    if (error) throw error
+    if (error) {
+      if (error.code === '23503') throw new Error('Não é possível excluir: este cliente tem Ordens de Serviço ou outros registros vinculados.')
+      throw error
+    }
     return
   }
+  const temOSVinculada = lsGet<OrdemServico[]>('ordens_servico', []).some((os) => os.cliente_id === id)
+  if (temOSVinculada) {
+    throw new Error('Não é possível excluir: este cliente tem Ordens de Serviço vinculadas.')
+  }
   lsSet('clientes', lsGet<Cliente[]>('clientes', []).filter((c) => c.id !== id))
+  // Exclui em cadeia os veículos e fotos desse cliente (mesmo comportamento do "on delete cascade" do Supabase)
+  const veiculosDoCliente = lsGet<Veiculo[]>('veiculos', []).filter((v) => v.cliente_id === id)
+  lsSet('veiculos', lsGet<Veiculo[]>('veiculos', []).filter((v) => v.cliente_id !== id))
+  const idsVeiculos = new Set(veiculosDoCliente.map((v) => v.id))
+  lsSet('veiculo_fotos', lsGet<VeiculoFoto[]>('veiculo_fotos', []).filter((f) => !idsVeiculos.has(f.veiculo_id)))
 }
 
 // ---------- VEÍCULOS ----------
@@ -129,10 +154,17 @@ export async function upsertVeiculo(veiculo: Partial<Veiculo>): Promise<Veiculo>
     marca: veiculo.marca || null,
     modelo: veiculo.modelo || '',
     ano: veiculo.ano || null,
+    motor: veiculo.motor || null,
+    combustivel: veiculo.combustivel || null,
     cor: veiculo.cor || null,
     km_atual: veiculo.km_atual || 0,
     chassi: veiculo.chassi || null,
-    observacoes: veiculo.observacoes || null,
+    renavam: veiculo.renavam || null,
+    intervalo_revisao_km: veiculo.intervalo_revisao_km || null,
+    intervalo_revisao_meses: veiculo.intervalo_revisao_meses || null,
+    ultima_revisao_km: veiculo.ultima_revisao_km || null,
+    ultima_revisao_data: veiculo.ultima_revisao_data || null,
+    observacoes: limparTextoOuNull(veiculo.observacoes),
     created_at: nowIso(),
     updated_at: nowIso(),
   }
@@ -144,10 +176,47 @@ export async function upsertVeiculo(veiculo: Partial<Veiculo>): Promise<Veiculo>
 export async function deleteVeiculo(id: string) {
   if (supabaseConfigured) {
     const { error } = await supabase.from('veiculos').delete().eq('id', id)
+    if (error) {
+      if (error.code === '23503') throw new Error('Não é possível excluir: este veículo tem Ordens de Serviço ou outros registros vinculados.')
+      throw error
+    }
+    return
+  }
+  const temOSVinculada = lsGet<OrdemServico[]>('ordens_servico', []).some((os) => os.veiculo_id === id)
+  if (temOSVinculada) {
+    throw new Error('Não é possível excluir: este veículo tem Ordens de Serviço vinculadas.')
+  }
+  lsSet('veiculos', lsGet<Veiculo[]>('veiculos', []).filter((v) => v.id !== id))
+  lsSet('veiculo_fotos', lsGet<VeiculoFoto[]>('veiculo_fotos', []).filter((f) => f.veiculo_id !== id))
+}
+
+export async function listFotosVeiculo(veiculoId: string): Promise<VeiculoFoto[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase.from('veiculo_fotos').select('*').eq('veiculo_id', veiculoId)
+    if (error) throw error
+    return data as VeiculoFoto[]
+  }
+  return lsGet<VeiculoFoto[]>('veiculo_fotos', []).filter((f) => f.veiculo_id === veiculoId)
+}
+
+export async function adicionarFotoVeiculo(veiculoId: string, url: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('veiculo_fotos').insert({ veiculo_id: veiculoId, url })
     if (error) throw error
     return
   }
-  lsSet('veiculos', lsGet<Veiculo[]>('veiculos', []).filter((v) => v.id !== id))
+  const fotos = lsGet<VeiculoFoto[]>('veiculo_fotos', [])
+  fotos.push({ id: uuid(), veiculo_id: veiculoId, url, created_at: nowIso() })
+  lsSet('veiculo_fotos', fotos)
+}
+
+export async function removerFotoVeiculo(fotoId: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('veiculo_fotos').delete().eq('id', fotoId)
+    if (error) throw error
+    return
+  }
+  lsSet('veiculo_fotos', lsGet<VeiculoFoto[]>('veiculo_fotos', []).filter((f) => f.id !== fotoId))
 }
 
 // ---------- PEÇAS / ESTOQUE ----------
@@ -176,20 +245,43 @@ export async function upsertPeca(peca: Partial<Peca>): Promise<Peca> {
   }
   const nova: Peca = {
     id: uuid(),
-    nome: peca.nome || '',
+    nome: limparTexto(peca.nome),
     codigo: peca.codigo || null,
+    codigo_barras: peca.codigo_barras || null,
     categoria: peca.categoria || null,
+    localizacao: peca.localizacao || null,
     quantidade_estoque: peca.quantidade_estoque || 0,
     estoque_minimo: peca.estoque_minimo ?? 5,
     preco_custo: peca.preco_custo || 0,
     preco_venda: peca.preco_venda || 0,
     fornecedor: peca.fornecedor || null,
+    fornecedor_id: peca.fornecedor_id || null,
     created_at: nowIso(),
     updated_at: nowIso(),
   }
   pecas.push(nova)
   lsSet('pecas', pecas)
   return nova
+}
+
+export async function deletePeca(id: string) {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('pecas').delete().eq('id', id)
+    if (error) {
+      if (error.code === '23503') {
+        throw new Error('Não é possível excluir: esta peça já foi usada em alguma OS, compra ou movimentação de estoque.')
+      }
+      throw error
+    }
+    return
+  }
+  const usadaEmOS = lsGet<OSItem[]>('os_itens', []).some((i) => i.peca_id === id)
+  const usadaEmMovimentacao = lsGet<MovimentacaoEstoque[]>('movimentacoes', []).some((m) => m.peca_id === id)
+  const usadaEmCompra = lsGet<{ peca_id: string | null }[]>('ordens_compra_itens', []).some((i) => i.peca_id === id)
+  if (usadaEmOS || usadaEmMovimentacao || usadaEmCompra) {
+    throw new Error('Não é possível excluir: esta peça já foi usada em alguma OS, compra ou movimentação de estoque.')
+  }
+  lsSet('pecas', lsGet<Peca[]>('pecas', []).filter((p) => p.id !== id))
 }
 
 export async function registrarEntradaEstoque(pecaId: string, quantidade: number, motivo = 'Compra fornecedor') {
@@ -238,6 +330,118 @@ export async function listMovimentacoesEstoque(): Promise<MovimentacaoEstoque[]>
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
 }
 
+export async function registrarSaidaEstoque(pecaId: string, quantidade: number, motivo = 'Saída manual') {
+  if (supabaseConfigured) {
+    const { data: peca, error: e1 } = await supabase.from('pecas').select('quantidade_estoque').eq('id', pecaId).single()
+    if (e1) throw e1
+    const { error: e2 } = await supabase
+      .from('pecas')
+      .update({ quantidade_estoque: (peca.quantidade_estoque || 0) - quantidade })
+      .eq('id', pecaId)
+    if (e2) throw e2
+    const { error: e3 } = await supabase.from('movimentacoes_estoque').insert({
+      peca_id: pecaId,
+      tipo: 'saida',
+      quantidade,
+      motivo,
+    })
+    if (e3) throw e3
+    return
+  }
+  const pecas = lsGet<Peca[]>('pecas', [])
+  const idx = pecas.findIndex((p) => p.id === pecaId)
+  if (idx >= 0) {
+    pecas[idx].quantidade_estoque -= quantidade
+    lsSet('pecas', pecas)
+  }
+  const movs = lsGet<MovimentacaoEstoque[]>('movimentacoes', [])
+  movs.push({ id: uuid(), peca_id: pecaId, tipo: 'saida', quantidade, motivo, os_id: null, created_at: nowIso() })
+  lsSet('movimentacoes', movs)
+}
+
+export async function registrarAjusteInventario(pecaId: string, quantidadeContada: number, motivo = 'Ajuste de inventário') {
+  const pecaAtual = (await listPecas()).find((p) => p.id === pecaId)
+  if (!pecaAtual) return
+  const diferenca = quantidadeContada - pecaAtual.quantidade_estoque
+
+  if (supabaseConfigured) {
+    const { error: e1 } = await supabase.from('pecas').update({ quantidade_estoque: quantidadeContada }).eq('id', pecaId)
+    if (e1) throw e1
+    const { error: e2 } = await supabase.from('movimentacoes_estoque').insert({
+      peca_id: pecaId,
+      tipo: 'ajuste',
+      quantidade: diferenca,
+      motivo: `${motivo} (${diferenca >= 0 ? '+' : ''}${diferenca})`,
+    })
+    if (e2) throw e2
+    return
+  }
+  const pecas = lsGet<Peca[]>('pecas', [])
+  const idx = pecas.findIndex((p) => p.id === pecaId)
+  if (idx >= 0) {
+    pecas[idx].quantidade_estoque = quantidadeContada
+    lsSet('pecas', pecas)
+  }
+  const movs = lsGet<MovimentacaoEstoque[]>('movimentacoes', [])
+  movs.push({
+    id: uuid(),
+    peca_id: pecaId,
+    tipo: 'ajuste',
+    quantidade: diferenca,
+    motivo: `${motivo} (${diferenca >= 0 ? '+' : ''}${diferenca})`,
+    os_id: null,
+    created_at: nowIso(),
+  })
+  lsSet('movimentacoes', movs)
+}
+
+export async function listMovimentacoesPorPeca(pecaId: string): Promise<MovimentacaoEstoque[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('movimentacoes_estoque')
+      .select('*')
+      .eq('peca_id', pecaId)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return data as MovimentacaoEstoque[]
+  }
+  return lsGet<MovimentacaoEstoque[]>('movimentacoes', [])
+    .filter((m) => m.peca_id === pecaId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
+export async function verificarNfeJaImportada(chaveAcesso: string): Promise<boolean> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('nfe_compras_importadas')
+      .select('id')
+      .eq('chave_acesso', chaveAcesso)
+      .maybeSingle()
+    if (error) throw error
+    return !!data
+  }
+  return lsGet<NfeCompraImportada[]>('nfe_compras_importadas', []).some((n) => n.chave_acesso === chaveAcesso)
+}
+
+export async function registrarNfeImportada(dados: {
+  chave_acesso: string
+  numero: number
+  serie: string
+  emitente_nome: string
+  emitente_cnpj: string
+  valor_total: number
+  itens_importados: number
+}): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('nfe_compras_importadas').insert(dados)
+    if (error) throw error
+    return
+  }
+  const registros = lsGet<NfeCompraImportada[]>('nfe_compras_importadas', [])
+  registros.push({ id: uuid(), created_at: nowIso(), ...dados })
+  lsSet('nfe_compras_importadas', registros)
+}
+
 // ---------- MECÂNICOS ----------
 
 export async function listMecanicos(): Promise<Mecanico[]> {
@@ -247,6 +451,49 @@ export async function listMecanicos(): Promise<Mecanico[]> {
     return data as Mecanico[]
   }
   return lsGet<Mecanico[]>('mecanicos', []).filter((m) => m.ativo)
+}
+
+export async function listTodosMecanicos(): Promise<Mecanico[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase.from('mecanicos').select('*').order('nome')
+    if (error) throw error
+    return data as Mecanico[]
+  }
+  return lsGet<Mecanico[]>('mecanicos', []).sort((a, b) => a.nome.localeCompare(b.nome))
+}
+
+export async function alterarStatusMecanico(id: string, ativo: boolean): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('mecanicos').update({ ativo }).eq('id', id)
+    if (error) throw error
+    return
+  }
+  const mecanicos = lsGet<Mecanico[]>('mecanicos', [])
+  const idx = mecanicos.findIndex((m) => m.id === id)
+  if (idx >= 0) {
+    mecanicos[idx].ativo = ativo
+    lsSet('mecanicos', mecanicos)
+  }
+}
+
+export async function deleteMecanico(id: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('mecanicos').delete().eq('id', id)
+    if (error) {
+      if (error.code === '23503') {
+        throw new Error('Não é possível excluir: este mecânico já foi atribuído a alguma OS, agendamento ou usuário. Considere desativar em vez de excluir.')
+      }
+      throw error
+    }
+    return
+  }
+  const usadoEmOS = lsGet<OrdemServico[]>('ordens_servico', []).some((os) => os.mecanico_id === id)
+  const usadoEmAgendamento = lsGet<{ mecanico_id: string | null }[]>('agendamentos', []).some((a) => a.mecanico_id === id)
+  const usadoEmUsuario = lsGet<{ mecanico_id: string | null }[]>('usuarios', []).some((u) => u.mecanico_id === id)
+  if (usadoEmOS || usadoEmAgendamento || usadoEmUsuario) {
+    throw new Error('Não é possível excluir: este mecânico já foi atribuído a alguma OS, agendamento ou usuário. Considere desativar em vez de excluir.')
+  }
+  lsSet('mecanicos', lsGet<Mecanico[]>('mecanicos', []).filter((m) => m.id !== id))
 }
 
 export async function upsertMecanico(mecanico: Partial<Mecanico>): Promise<Mecanico> {
@@ -266,6 +513,8 @@ export async function upsertMecanico(mecanico: Partial<Mecanico>): Promise<Mecan
     id: uuid(),
     nome: mecanico.nome || '',
     telefone: mecanico.telefone || null,
+    especialidade: mecanico.especialidade || null,
+    comissao_percentual: mecanico.comissao_percentual || 0,
     ativo: true,
     created_at: nowIso(),
   }
@@ -331,7 +580,9 @@ export async function criarOrdemServico(payload: {
   mecanico_id: string | null
   km_entrada: number | null
   defeito_relatado: string | null
+  criado_por?: string | null
 }): Promise<OrdemServico> {
+  payload = { ...payload, defeito_relatado: limparTextoOuNull(payload.defeito_relatado) }
   if (supabaseConfigured) {
     const { data, error } = await supabase
       .from('ordens_servico')
@@ -351,8 +602,16 @@ export async function criarOrdemServico(payload: {
     mecanico_id: payload.mecanico_id,
     status: 'orcamento',
     km_entrada: payload.km_entrada,
-    defeito_relatado: payload.defeito_relatado,
+    defeito_relatado: limparTextoOuNull(payload.defeito_relatado),
     diagnostico: null,
+    valor_desconto: 0,
+    valor_frete: 0,
+    valor_pago: 0,
+    garantia_dias: null,
+    assinatura_url: null,
+    criado_por: payload.criado_por || null,
+    token_aprovacao: uuid(),
+    aprovado_pelo_cliente_em: null,
     valor_total: 0,
     data_orcamento: nowIso(),
     data_aprovacao: null,
@@ -373,7 +632,9 @@ export async function adicionarItemOS(item: {
   descricao: string
   quantidade: number
   valor_unitario: number
+  tempo_minutos?: number | null
 }): Promise<void> {
+  item = { ...item, descricao: limparTexto(item.descricao) }
   if (supabaseConfigured) {
     const { error } = await supabase.from('os_itens').insert(item)
     if (error) throw error
@@ -389,6 +650,7 @@ export async function adicionarItemOS(item: {
     quantidade: item.quantidade,
     valor_unitario: item.valor_unitario,
     valor_total: item.quantidade * item.valor_unitario,
+    tempo_minutos: item.tempo_minutos ?? null,
     estoque_baixado: false,
     created_at: nowIso(),
   })
@@ -409,21 +671,28 @@ export async function removerItemOS(itemId: string, osId: string): Promise<void>
 
 function recalcularValorOSLocal(osId: string) {
   const itens = lsGet<OSItem[]>('os_itens', []).filter((i) => i.os_id === osId)
-  const total = itens.reduce((sum, i) => sum + i.valor_total, 0)
+  const soma = itens.reduce((sum, i) => sum + i.valor_total, 0)
   const todasOS = lsGet<OrdemServico[]>('ordens_servico', [])
   const idx = todasOS.findIndex((o) => o.id === osId)
   if (idx >= 0) {
-    todasOS[idx].valor_total = total
+    const desconto = todasOS[idx].valor_desconto || 0
+    const frete = todasOS[idx].valor_frete || 0
+    todasOS[idx].valor_total = soma - desconto + frete
     lsSet('ordens_servico', todasOS)
   }
 }
 
 // Muda status da OS. No modo Supabase, os triggers do banco cuidam de
 // estoque e financeiro. No modo local, replicamos a mesma regra aqui.
-export async function mudarStatusOS(osId: string, novoStatus: StatusOS): Promise<void> {
+export async function mudarStatusOS(osId: string, novoStatus: StatusOS, usuarioNome?: string): Promise<void> {
+  const anterior = await getOrdemServico(osId)
+
   if (supabaseConfigured) {
     const { error } = await supabase.from('ordens_servico').update({ status: novoStatus }).eq('id', osId)
     if (error) throw error
+    if (anterior) {
+      await registrarHistoricoOS(osId, usuarioNome, 'Mudança de status', `${anterior.status} → ${novoStatus}`)
+    }
     return
   }
 
@@ -491,29 +760,272 @@ export async function mudarStatusOS(osId: string, novoStatus: StatusOS): Promise
 
   if (novoStatus === 'concluido') os.data_conclusao = nowIso()
 
-  // Gera conta a receber ao entregar
+  // Gera conta a receber ao entregar — só pelo saldo devedor, descontando o
+  // que já foi pago (valor_pago), pra não cobrar de novo o que já entrou.
   if (novoStatus === 'entregue' && statusAnterior !== 'entregue') {
     os.data_entrega = nowIso()
-    const contas = lsGet<ContaReceber[]>('contas_receber', [])
-    contas.push({
-      id: uuid(),
-      os_id: os.id,
-      cliente_id: os.cliente_id,
-      descricao: `OS #${os.numero}`,
-      valor: os.valor_total,
-      status: 'pendente',
-      data_vencimento: new Date().toISOString().slice(0, 10),
-      data_pagamento: null,
-      forma_pagamento: null,
-      created_at: nowIso(),
-    })
-    lsSet('contas_receber', contas)
+    const saldoDevedor = os.valor_total - (os.valor_pago || 0)
+    if (saldoDevedor > 0) {
+      const contas = lsGet<ContaReceber[]>('contas_receber', [])
+      contas.push({
+        id: uuid(),
+        os_id: os.id,
+        cliente_id: os.cliente_id,
+        descricao: `OS #${os.numero}`,
+        valor: saldoDevedor,
+        categoria: 'Serviços',
+        centro_custo: null,
+        conciliado: false,
+        status: 'pendente',
+        data_vencimento: new Date().toISOString().slice(0, 10),
+        data_pagamento: null,
+        forma_pagamento: null,
+        grupo_parcela_id: null,
+        parcela_numero: null,
+        parcela_total: null,
+        created_at: nowIso(),
+      })
+      lsSet('contas_receber', contas)
+    }
+
+    // Atualiza KM atual e data da última revisão do veículo automaticamente
+    if (os.km_entrada) {
+      const veiculos = lsGet<Veiculo[]>('veiculos', [])
+      const vIdx = veiculos.findIndex((v) => v.id === os.veiculo_id)
+      if (vIdx >= 0) {
+        veiculos[vIdx].km_atual = Math.max(veiculos[vIdx].km_atual, os.km_entrada)
+        veiculos[vIdx].ultima_revisao_km = os.km_entrada
+        veiculos[vIdx].ultima_revisao_data = new Date().toISOString().slice(0, 10)
+        lsSet('veiculos', veiculos)
+      }
+    }
   }
 
   os.status = novoStatus
   os.updated_at = nowIso()
   todasOS[idx] = os
   lsSet('ordens_servico', todasOS)
+  await registrarHistoricoOS(osId, usuarioNome, 'Mudança de status', `${statusAnterior} → ${novoStatus}`)
+}
+
+// ---------- APROVAÇÃO DE ORÇAMENTO PELO CLIENTE (link público) ----------
+
+export async function getOrdemServicoPorToken(token: string): Promise<OrdemServico | null> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('ordens_servico')
+      .select('*, cliente:clientes(*), veiculo:veiculos(*), itens:os_itens(*, peca:pecas(*))')
+      .eq('token_aprovacao', token)
+      .maybeSingle()
+    if (error) throw error
+    return data as OrdemServico | null
+  }
+  const todasOS = lsGet<OrdemServico[]>('ordens_servico', [])
+  const os = todasOS.find((o) => o.token_aprovacao === token)
+  if (!os) return null
+  return getOrdemServico(os.id)
+}
+
+export async function aprovarOrcamentoPeloCliente(token: string): Promise<void> {
+  const os = await getOrdemServicoPorToken(token)
+  if (!os) throw new Error('Orçamento não encontrado.')
+  if (os.status !== 'orcamento') throw new Error('Este orçamento já foi processado anteriormente.')
+
+  await mudarStatusOS(os.id, 'aprovado', 'Cliente (aprovação online)')
+
+  const agora = nowIso()
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('ordens_servico').update({ aprovado_pelo_cliente_em: agora }).eq('id', os.id)
+    if (error) throw error
+    return
+  }
+  const todasOS = lsGet<OrdemServico[]>('ordens_servico', [])
+  const idx = todasOS.findIndex((o) => o.id === os.id)
+  if (idx >= 0) {
+    todasOS[idx].aprovado_pelo_cliente_em = agora
+    lsSet('ordens_servico', todasOS)
+  }
+}
+
+// ---------- ANEXOS DA OS (fotos e vídeos) ----------
+
+export async function listAnexosOS(osId: string): Promise<OSAnexo[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase.from('os_anexos').select('*').eq('os_id', osId).order('created_at')
+    if (error) throw error
+    return data as OSAnexo[]
+  }
+  return lsGet<OSAnexo[]>('os_anexos', []).filter((a) => a.os_id === osId)
+}
+
+export async function adicionarAnexoOS(osId: string, url: string, tipo: 'foto' | 'video'): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_anexos').insert({ os_id: osId, url, tipo })
+    if (error) throw error
+    return
+  }
+  const anexos = lsGet<OSAnexo[]>('os_anexos', [])
+  anexos.push({ id: uuid(), os_id: osId, url, tipo, descricao: null, created_at: nowIso() })
+  lsSet('os_anexos', anexos)
+}
+
+export async function removerAnexoOS(anexoId: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_anexos').delete().eq('id', anexoId)
+    if (error) throw error
+    return
+  }
+  lsSet('os_anexos', lsGet<OSAnexo[]>('os_anexos', []).filter((a) => a.id !== anexoId))
+}
+
+// ---------- CHECKLIST DA OS ----------
+
+export async function listChecklistOS(osId: string): Promise<OSChecklistItem[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('os_checklist_itens')
+      .select('*')
+      .eq('os_id', osId)
+      .order('created_at')
+    if (error) throw error
+    return data as OSChecklistItem[]
+  }
+  return lsGet<OSChecklistItem[]>('os_checklist_itens', []).filter((c) => c.os_id === osId)
+}
+
+export async function adicionarChecklistItem(osId: string, descricao: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_checklist_itens').insert({ os_id: osId, descricao })
+    if (error) throw error
+    return
+  }
+  const itens = lsGet<OSChecklistItem[]>('os_checklist_itens', [])
+  itens.push({ id: uuid(), os_id: osId, descricao, concluido: false, created_at: nowIso() })
+  lsSet('os_checklist_itens', itens)
+}
+
+export async function alternarChecklistItem(itemId: string, concluido: boolean): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_checklist_itens').update({ concluido }).eq('id', itemId)
+    if (error) throw error
+    return
+  }
+  const itens = lsGet<OSChecklistItem[]>('os_checklist_itens', [])
+  const idx = itens.findIndex((i) => i.id === itemId)
+  if (idx >= 0) {
+    itens[idx].concluido = concluido
+    lsSet('os_checklist_itens', itens)
+  }
+}
+
+export async function removerChecklistItem(itemId: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_checklist_itens').delete().eq('id', itemId)
+    if (error) throw error
+    return
+  }
+  lsSet('os_checklist_itens', lsGet<OSChecklistItem[]>('os_checklist_itens', []).filter((i) => i.id !== itemId))
+}
+
+// ---------- HISTÓRICO DE ALTERAÇÕES DA OS ----------
+
+export async function listHistoricoOS(osId: string): Promise<OSHistorico[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('os_historico')
+      .select('*')
+      .eq('os_id', osId)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return data as OSHistorico[]
+  }
+  return lsGet<OSHistorico[]>('os_historico', [])
+    .filter((h) => h.os_id === osId)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+}
+
+export async function registrarHistoricoOS(
+  osId: string,
+  usuarioNome: string | undefined,
+  acao: string,
+  detalhe?: string
+): Promise<void> {
+  const entrada = { os_id: osId, usuario_nome: usuarioNome || null, acao, detalhe: detalhe || null }
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('os_historico').insert(entrada)
+    if (error) throw error
+    return
+  }
+  const historico = lsGet<OSHistorico[]>('os_historico', [])
+  historico.push({ id: uuid(), created_at: nowIso(), ...entrada })
+  lsSet('os_historico', historico)
+}
+
+// ---------- VALORES DA OS (desconto, frete, pago, garantia) ----------
+
+export async function atualizarValoresOS(
+  osId: string,
+  valores: { valor_desconto?: number; valor_frete?: number; valor_pago?: number; garantia_dias?: number | null }
+): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('ordens_servico').update(valores).eq('id', osId)
+    if (error) throw error
+    return
+  }
+  const todasOS = lsGet<OrdemServico[]>('ordens_servico', [])
+  const idx = todasOS.findIndex((o) => o.id === osId)
+  if (idx >= 0) {
+    const valorPagoAnterior = todasOS[idx].valor_pago || 0
+    todasOS[idx] = { ...todasOS[idx], ...valores, updated_at: nowIso() }
+    lsSet('ordens_servico', todasOS)
+    recalcularValorOSLocal(osId)
+
+    // Se o valor pago aumentou, registra a diferença como entrada no caixa —
+    // mesma regra do trigger fn_registrar_pagamento_os no modo Supabase.
+    if (valores.valor_pago !== undefined && valores.valor_pago > valorPagoAnterior) {
+      const caixa = lsGet<CaixaMovimentacao[]>('caixa_movimentacoes', [])
+      caixa.push({
+        id: uuid(),
+        tipo: 'entrada',
+        categoria: 'Serviços',
+        centro_custo: null,
+        forma_pagamento: null,
+        conciliado: false,
+        descricao: `Pagamento OS #${todasOS[idx].numero}`,
+        valor: valores.valor_pago - valorPagoAnterior,
+        data_movimentacao: nowIso(),
+        origem: 'ordem_servico',
+        origem_id: osId,
+        created_at: nowIso(),
+      })
+      lsSet('caixa_movimentacoes', caixa)
+    }
+  }
+}
+
+export async function atualizarAssinaturaOS(osId: string, assinaturaUrl: string): Promise<void> {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('ordens_servico').update({ assinatura_url: assinaturaUrl }).eq('id', osId)
+    if (error) throw error
+    return
+  }
+  const todasOS = lsGet<OrdemServico[]>('ordens_servico', [])
+  const idx = todasOS.findIndex((o) => o.id === osId)
+  if (idx >= 0) {
+    todasOS[idx].assinatura_url = assinaturaUrl
+    lsSet('ordens_servico', todasOS)
+  }
+}
+
+export async function listTodosItensOS(): Promise<OSItem[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('os_itens')
+      .select('*, os:ordens_servico(status, numero)')
+    if (error) throw error
+    return data as OSItem[]
+  }
+  return lsGet<OSItem[]>('os_itens', [])
 }
 
 // ---------- AGENDAMENTOS ----------
@@ -581,6 +1093,20 @@ export async function atualizarStatusAgendamento(id: string, status: Agendamento
   }
 }
 
+export async function reagendar(id: string, novaDataHora: string) {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('agendamentos').update({ data_hora: novaDataHora }).eq('id', id)
+    if (error) throw error
+    return
+  }
+  const ags = lsGet<Agendamento[]>('agendamentos', [])
+  const idx = ags.findIndex((a) => a.id === id)
+  if (idx >= 0) {
+    ags[idx].data_hora = novaDataHora
+    lsSet('agendamentos', ags)
+  }
+}
+
 // ---------- FINANCEIRO ----------
 
 export async function listContasReceber(): Promise<ContaReceber[]> {
@@ -621,9 +1147,16 @@ export async function criarContaPagar(payload: Partial<ContaPagar>): Promise<Con
     fornecedor: payload.fornecedor || null,
     descricao: payload.descricao || '',
     valor: payload.valor || 0,
+    categoria: payload.categoria || null,
+    centro_custo: payload.centro_custo || null,
+    forma_pagamento: payload.forma_pagamento || null,
+    conciliado: false,
     status: 'pendente',
     data_vencimento: payload.data_vencimento || null,
     data_pagamento: null,
+    grupo_parcela_id: payload.grupo_parcela_id || null,
+    parcela_numero: payload.parcela_numero || null,
+    parcela_total: payload.parcela_total || null,
     created_at: nowIso(),
   }
   contas.push(nova)
@@ -631,10 +1164,60 @@ export async function criarContaPagar(payload: Partial<ContaPagar>): Promise<Con
   return nova
 }
 
-export async function marcarContaPaga(tipo: 'receber' | 'pagar', id: string) {
+// Cria uma conta a pagar em N parcelas mensais (valor dividido igualmente,
+// vencimentos espaçados por mês a partir da data informada).
+export async function criarContaPagarParcelada(payload: {
+  fornecedor: string | null
+  descricao: string
+  valorTotal: number
+  numeroParcelas: number
+  categoria: string | null
+  centro_custo: string | null
+  primeiroVencimento: string
+}): Promise<ContaPagar[]> {
+  const grupoId = uuid()
+  const valorParcela = Math.round((payload.valorTotal / payload.numeroParcelas) * 100) / 100
+  const criadas: ContaPagar[] = []
+
+  for (let i = 0; i < payload.numeroParcelas; i++) {
+    const vencimento = new Date(payload.primeiroVencimento)
+    vencimento.setMonth(vencimento.getMonth() + i)
+
+    // Ajusta a última parcela pra compensar arredondamento
+    const ehUltima = i === payload.numeroParcelas - 1
+    const valor = ehUltima
+      ? Math.round((payload.valorTotal - valorParcela * (payload.numeroParcelas - 1)) * 100) / 100
+      : valorParcela
+
+    const conta = await criarContaPagar({
+      fornecedor: payload.fornecedor,
+      descricao: payload.numeroParcelas > 1 ? `${payload.descricao} (${i + 1}/${payload.numeroParcelas})` : payload.descricao,
+      valor,
+      categoria: payload.categoria,
+      centro_custo: payload.centro_custo,
+      data_vencimento: vencimento.toISOString().slice(0, 10),
+      grupo_parcela_id: payload.numeroParcelas > 1 ? grupoId : null,
+      parcela_numero: payload.numeroParcelas > 1 ? i + 1 : null,
+      parcela_total: payload.numeroParcelas > 1 ? payload.numeroParcelas : null,
+    })
+    criadas.push(conta)
+  }
+
+  return criadas
+}
+
+export async function marcarContaPaga(tipo: 'receber' | 'pagar', id: string, formaPagamento?: string) {
   const tabela = tipo === 'receber' ? 'contas_receber' : 'contas_pagar'
+  const updatePayload: Record<string, unknown> = { status: 'pago' }
+  if (formaPagamento) updatePayload.forma_pagamento = formaPagamento
+
   if (supabaseConfigured) {
-    const { error } = await supabase.from(tabela).update({ status: 'pago' }).eq('id', id)
+    // Aqui NÃO criamos o lançamento de caixa manualmente — os triggers
+    // fn_pagamento_conta_receber / fn_pagamento_conta_pagar (schema.sql) fazem
+    // isso automaticamente no banco assim que o status muda pra 'pago'. Se algum
+    // dia esses triggers forem removidos/alterados, essa geração de caixa
+    // também precisa ser reimplementada aqui.
+    const { error } = await supabase.from(tabela).update(updatePayload).eq('id', id)
     if (error) throw error
     return
   }
@@ -644,12 +1227,16 @@ export async function marcarContaPaga(tipo: 'receber' | 'pagar', id: string) {
   if (idx >= 0) {
     contas[idx].status = 'pago'
     contas[idx].data_pagamento = nowIso()
+    if (formaPagamento) contas[idx].forma_pagamento = formaPagamento
     lsSet(key, contas)
-    const caixa = lsGet<any[]>('caixa_movimentacoes', [])
+    const caixa = lsGet<CaixaMovimentacao[]>('caixa_movimentacoes', [])
     caixa.push({
       id: uuid(),
       tipo: tipo === 'receber' ? 'entrada' : 'saida',
-      categoria: tipo === 'receber' ? 'Recebimento OS' : 'Pagamento fornecedor',
+      categoria: contas[idx].categoria || (tipo === 'receber' ? 'Serviços' : 'Fornecedores'),
+      centro_custo: contas[idx].centro_custo || null,
+      forma_pagamento: contas[idx].forma_pagamento || null,
+      conciliado: false,
       descricao: contas[idx].descricao,
       valor: contas[idx].valor,
       data_movimentacao: nowIso(),
@@ -659,6 +1246,63 @@ export async function marcarContaPaga(tipo: 'receber' | 'pagar', id: string) {
     })
     lsSet('caixa_movimentacoes', caixa)
   }
+}
+
+export async function alternarConciliacao(tabela: 'contas_receber' | 'contas_pagar' | 'caixa_movimentacoes', id: string, conciliado: boolean) {
+  if (supabaseConfigured) {
+    const { error } = await supabase.from(tabela).update({ conciliado }).eq('id', id)
+    if (error) throw error
+    return
+  }
+  const registros = lsGet<{ id: string; conciliado?: boolean }[]>(tabela, [])
+  const idx = registros.findIndex((r) => r.id === id)
+  if (idx >= 0) {
+    registros[idx].conciliado = conciliado
+    lsSet(tabela, registros)
+  }
+}
+
+export async function listCaixaMovimentacoes(): Promise<CaixaMovimentacao[]> {
+  if (supabaseConfigured) {
+    const { data, error } = await supabase
+      .from('caixa_movimentacoes')
+      .select('*')
+      .order('data_movimentacao', { ascending: false })
+    if (error) throw error
+    return data as CaixaMovimentacao[]
+  }
+  return lsGet<CaixaMovimentacao[]>('caixa_movimentacoes', []).sort((a, b) =>
+    b.data_movimentacao.localeCompare(a.data_movimentacao)
+  )
+}
+
+export async function criarMovimentacaoCaixaManual(payload: {
+  tipo: 'entrada' | 'saida'
+  categoria: string
+  centro_custo?: string | null
+  forma_pagamento?: string | null
+  descricao: string
+  valor: number
+}): Promise<void> {
+  const registro = {
+    tipo: payload.tipo,
+    categoria: payload.categoria,
+    centro_custo: payload.centro_custo || null,
+    forma_pagamento: payload.forma_pagamento || null,
+    conciliado: false,
+    descricao: payload.descricao,
+    valor: payload.valor,
+    origem: 'manual',
+    origem_id: null,
+  }
+  if (supabaseConfigured) {
+    const { error } = await supabase.from('caixa_movimentacoes').insert(registro)
+    if (error) throw error
+    return
+  }
+  const caixa = lsGet<CaixaMovimentacao[]>('caixa_movimentacoes', [])
+  caixa.push({ id: uuid(), data_movimentacao: nowIso(), created_at: nowIso(), ...registro })
+  lsSet('caixa_movimentacoes', caixa)
 }
 
 // ---------- EMPRESA / CONFIGURAÇÕES ----------
@@ -689,8 +1333,12 @@ export async function salvarEmpresaConfig(config: Partial<EmpresaConfig>): Promi
     nome_fantasia: config.nome_fantasia ?? atual?.nome_fantasia ?? 'Minha Oficina',
     razao_social: config.razao_social ?? atual?.razao_social ?? null,
     cnpj: config.cnpj ?? atual?.cnpj ?? null,
+    inscricao_estadual: config.inscricao_estadual ?? atual?.inscricao_estadual ?? null,
+    inscricao_municipal: config.inscricao_municipal ?? atual?.inscricao_municipal ?? null,
+    certificado_digital_status: config.certificado_digital_status ?? atual?.certificado_digital_status ?? 'nao_configurado',
     logo_url: config.logo_url ?? atual?.logo_url ?? null,
     cor_primaria: config.cor_primaria ?? atual?.cor_primaria ?? '#F2600C',
+    tema: config.tema ?? atual?.tema ?? 'claro',
     telefone: config.telefone ?? atual?.telefone ?? null,
     endereco: config.endereco ?? atual?.endereco ?? null,
     created_at: atual?.created_at ?? nowIso(),

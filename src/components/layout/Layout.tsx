@@ -1,35 +1,36 @@
-import { useState } from 'react'
-import { Outlet, useLocation } from 'react-router-dom'
-import { Sidebar } from './Sidebar'
-import { Header } from './Header'
-import { useEmpresaConfig } from '@/hooks/useEmpresaConfig'
-
-const TITLES: Record<string, string> = {
-  '/': 'Painel',
-  '/ordens-servico': 'Ordens de Serviço',
-  '/clientes': 'Clientes e Veículos',
-  '/estoque': 'Estoque',
-  '/financeiro': 'Financeiro',
-  '/agendamento': 'Agendamento',
-  '/relatorios': 'Relatórios',
-  '/configuracoes': 'Configurações',
-}
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { MenuBar } from './MenuBar'
+import { RibbonToolbar } from './RibbonToolbar'
+import { StatusBar } from './StatusBar'
+import { GlobalSearch } from '@/components/GlobalSearch'
+import { useIdleTimer } from '@/hooks/useIdleTimer'
+import { useAuth } from '@/contexts/AuthContext'
+import { useToast } from '@/contexts/ToastContext'
 
 export function Layout() {
-  const [mobileOpen, setMobileOpen] = useState(false)
-  const { config } = useEmpresaConfig()
   const location = useLocation()
-  const title = TITLES[location.pathname] || 'Sistema'
+  const navigate = useNavigate()
+  const { logout, usuario } = useAuth()
+  const { showToast } = useToast()
+
+  useIdleTimer(30, () => {
+    if (!usuario) return
+    logout()
+    showToast('Sessão encerrada por inatividade.', 'info')
+    navigate('/login')
+  })
 
   return (
-    <div className="flex h-screen bg-canvas">
-      <Sidebar config={config} isMobileOpen={mobileOpen} onCloseMobile={() => setMobileOpen(false)} />
-      <div className="flex-1 flex flex-col min-w-0">
-        <Header onOpenMenu={() => setMobileOpen(true)} title={title} />
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+    <div className="flex flex-col h-screen bg-canvas">
+      <MenuBar />
+      <RibbonToolbar />
+      <main className="flex-1 overflow-y-auto p-4 lg:p-8">
+        <div key={location.pathname} className="animate-fade-in">
           <Outlet />
-        </main>
-      </div>
+        </div>
+      </main>
+      <StatusBar />
+      <GlobalSearch />
     </div>
   )
 }

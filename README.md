@@ -33,6 +33,22 @@ do seu projeto Supabase antes de conectar o `.env`. Ele já cria as
 tabelas, triggers de baixa de estoque, geração de contas a receber e as
 views usadas na tela de Relatórios.
 
+## Upload de fotos (Supabase Storage)
+
+Pra fotos de clientes, veículos, OS e checklist de entrada funcionarem
+com upload real (não só colando URL), crie um bucket no Supabase:
+
+1. No painel do Supabase, vá em **Storage** → **New bucket**
+2. Nome: `oficina-uploads`
+3. Marque **Public bucket** (leitura pública, necessário pra exibir as
+   fotos no sistema)
+4. Pronto — não precisa de mais configuração, o sistema já sobe as
+   imagens comprimidas automaticamente pra lá
+
+Sem esse bucket configurado, o upload retorna um erro explicando o que
+falta. No modo local (sem Supabase), o upload funciona igual, mas guarda
+a imagem comprimida direto no navegador (sem precisar de bucket).
+
 ## Deploy Web (Vercel)
 
 Conecte o repositório no Vercel normalmente. O `vercel.json` já inclui
